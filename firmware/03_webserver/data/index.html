@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>PulsePoint Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: #0a0e17;
+            color: #e0e6f0;
+            min-height: 100vh;
+        }
+
+        header {
+            text-align: center;
+            padding: 16px;
+            background: linear-gradient(135deg, #0f1923 0%, #162332 100%);
+            border-bottom: 1px solid #1e3a5f;
+        }
+
+        header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            letter-spacing: 1px;
+        }
+
+        header h1 span {
+            color: #00d4aa;
+        }
+
+        #status {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ff4444;
+            margin-right: 8px;
+            transition: background 0.3s;
+        }
+
+        #status.connected {
+            background: #00d4aa;
+        }
+
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            padding: 16px;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: linear-gradient(145deg, #111b27 0%, #0d1520 100%);
+            border: 1px solid #1a2d44;
+            border-radius: 12px;
+            padding: 16px;
+            text-align: center;
+            transition: border-color 0.3s;
+        }
+
+        .card:hover {
+            border-color: #2a4a6f;
+        }
+
+        .card .label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #5a7a9a;
+            margin-bottom: 8px;
+        }
+
+        .card .value {
+            font-size: 42px;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            line-height: 1;
+        }
+
+        .card .unit {
+            font-size: 14px;
+            color: #5a7a9a;
+            margin-top: 4px;
+        }
+
+        /* Vital-specific colors */
+        .card.hr .value {
+            color: #ff6b6b;
+        }
+
+        .card.spo2 .value {
+            color: #4ecdc4;
+        }
+
+        .card.temp .value {
+            color: #ffd93d;
+        }
+
+        /* PPG Waveform */
+        .waveform {
+            margin: 0 16px 16px;
+            max-width: 900px;
+            margin-left: auto;
+            margin-right: auto;
+            background: #111b27;
+            border: 1px solid #1a2d44;
+            border-radius: 12px;
+            padding: 12px;
+        }
+
+        .waveform .label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #5a7a9a;
+            margin-bottom: 8px;
+        }
+
+        canvas {
+            width: 100%;
+            height: 120px;
+            display: block;
+        }
+
+        /* Status bar */
+        .statusbar {
+            text-align: center;
+            padding: 8px;
+            font-size: 12px;
+            color: #3a5a7a;
+        }
+
+        /* No finger warning */
+        .no-finger {
+            text-align: center;
+            padding: 12px;
+            margin: 0 16px;
+            max-width: 900px;
+            margin-left: auto;
+            margin-right: auto;
+            background: rgba(255, 107, 107, 0.1);
+            border: 1px solid rgba(255, 107, 107, 0.2);
+            border-radius: 8px;
+            color: #ff6b6b;
+            font-size: 13px;
+            display: none;
+        }
+
+        .no-finger.visible {
+            display: block;
+        }
+
+        @media (max-width: 600px) {
+            .cards {
+                grid-template-columns: 1fr;
+            }
+
+            .card .value {
+                font-size: 36px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <h1><span id="status"></span>Pulse<span>Point</span> Monitor</h1>
+    </header>
+
+    <div class="cards">
+        <div class="card hr">
+            <div class="label">Heart Rate</div>
+            <div class="value" id="hr">--</div>
+            <div class="unit">BPM</div>
+        </div>
+        <div class="card spo2">
+            <div class="label">SpO2</div>
+            <div class="value" id="spo2">--</div>
+            <div class="unit">%</div>
+        </div>
+        <div class="card temp">
+            <div class="label">Temperature</div>
+            <div class="value" id="temp">--</div>
+            <div class="unit">&deg;C</div>
+        </div>
+    </div>
+
+    <div class="no-finger" id="noFinger">
+        ⚠ Place finger on MAX30102 sensor
+    </div>
+
+    <div class="waveform">
+        <div class="label">PPG Waveform (IR)</div>
+        <canvas id="ppg"></canvas>
+    </div>
+
+    <div class="statusbar" id="statusbar">Connecting...</div>
+
+    <script>
+        // ── WebSocket Client ──
+        const WS_PORT = 81;
+        let ws;
+        let reconnectTimer;
+
+        // PPG waveform buffer
+        const PPG_LEN = 300;
+        const ppgData = new Array(PPG_LEN).fill(0);
+        const canvas = document.getElementById('ppg');
+        const ctx = canvas.getContext('2d');
+
+        function connect() {
+            const host = window.location.hostname;
+            ws = new WebSocket('ws://' + host + ':' + WS_PORT);
+
+            ws.onopen = function () {
+                document.getElementById('status').classList.add('connected');
+                document.getElementById('statusbar').textContent = 'Connected to ESP32';
+                clearTimeout(reconnectTimer);
+            };
+
+            ws.onclose = function () {
+                document.getElementById('status').classList.remove('connected');
+                document.getElementById('statusbar').textContent = 'Disconnected - reconnecting...';
+                reconnectTimer = setTimeout(connect, 2000);
+            };
+
+            ws.onerror = function () {
+                ws.close();
+            };
+
+            ws.onmessage = function (evt) {
+                try {
+                    const d = JSON.parse(evt.data);
+
+                    // Update vitals
+                    document.getElementById('hr').textContent =
+                        d.hr_valid && d.finger ? d.hr : '--';
+                    document.getElementById('spo2').textContent =
+                        d.spo2_valid && d.finger ? d.spo2 : '--';
+                    document.getElementById('temp').textContent =
+                        d.temp > 0 ? d.temp.toFixed(1) : '--';
+
+                    // Finger detection
+                    document.getElementById('noFinger').classList.toggle('visible', !d.finger);
+
+                    // PPG waveform
+                    ppgData.push(d.ir || 0);
+                    if (ppgData.length > PPG_LEN) ppgData.shift();
+                    drawPPG();
+                } catch (e) { }
+            };
+        }
+
+        function drawPPG() {
+            const w = canvas.width = canvas.offsetWidth * 2;
+            const h = canvas.height = canvas.offsetHeight * 2;
+            ctx.clearRect(0, 0, w, h);
+
+            // Find range for auto-scaling
+            let min = Infinity, max = -Infinity;
+            for (let i = 0; i < ppgData.length; i++) {
+                if (ppgData[i] < min) min = ppgData[i];
+                if (ppgData[i] > max) max = ppgData[i];
+            }
+            const range = max - min || 1;
+            const padding = 10;
+
+            // Draw waveform
+            ctx.strokeStyle = '#4ecdc4';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (let i = 0; i < ppgData.length; i++) {
+                const x = (i / PPG_LEN) * w;
+                const y = h - padding - ((ppgData[i] - min) / range) * (h - padding * 2);
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+
+            // Glow effect
+            ctx.strokeStyle = 'rgba(78, 205, 196, 0.15)';
+            ctx.lineWidth = 8;
+            ctx.beginPath();
+            for (let i = 0; i < ppgData.length; i++) {
+                const x = (i / PPG_LEN) * w;
+                const y = h - padding - ((ppgData[i] - min) / range) * (h - padding * 2);
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+
+        // Start
+        connect();
+    </script>
+</body>
+
+</html>
